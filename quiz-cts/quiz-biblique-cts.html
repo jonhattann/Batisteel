@@ -339,35 +339,50 @@ let db=null, rows=[];
     s.style.left=(Math.random()*100)+'vw'; s.style.animationDuration=(14+Math.random()*16)+'s'; s.style.animationDelay=(-Math.random()*30)+'s';
     s.style.fontSize=(1.4+Math.random()*1.6)+'rem'; box.appendChild(s); } })();
 
-/* ---------- Sons ---------- */
-let actx=null, soundOn=true, unlocked=false;
-// iPad : le son doit être débloqué par un toucher, et on passe en mode "lecture" pour ignorer le bouton silencieux
-const SILENT="data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQAAAAA=";
-function audio(){
-  if(!actx){ try{ actx=new (window.AudioContext||window.webkitAudioContext)(); }catch(e){} }
-  if(actx&&actx.state!=='running') actx.resume().catch(()=>{});
-  return actx;
+/* ---------- Sons ----------
+   iPad : on utilise de vrais fichiers audio (WAV générés ici) joués par <audio>,
+   qui passent même en mode silencieux, et on les débloque au premier toucher. */
+let soundOn=true, unlocked=false;
+function makeWav(notes,total){
+  const sr=22050, n=Math.floor(sr*total), data=new Float32Array(n);
+  notes.forEach(([f,t0,d,type,vol])=>{
+    const s0=Math.floor(t0*sr), len=Math.floor(d*sr);
+    for(let i=0;i<len && s0+i<n;i++){
+      const t=i/sr, ph=(f*t)%1;
+      let v = type==='square' ? (ph<.5?1:-1) : type==='saw' ? 2*ph-1 : type==='tri' ? 1-4*Math.abs(ph-.5) : Math.sin(2*Math.PI*f*t);
+      const env=Math.min(1,i/(sr*.01))*Math.pow(1-i/len,2);
+      data[s0+i]+=v*env*vol;
+    }
+  });
+  const buf=new ArrayBuffer(44+n*2), dv=new DataView(buf);
+  const w=(o,s)=>{ for(let i=0;i<s.length;i++) dv.setUint8(o+i,s.charCodeAt(i)); };
+  w(0,'RIFF'); dv.setUint32(4,36+n*2,true); w(8,'WAVE'); w(12,'fmt '); dv.setUint32(16,16,true); dv.setUint16(20,1,true); dv.setUint16(22,1,true);
+  dv.setUint32(24,sr,true); dv.setUint32(28,sr*2,true); dv.setUint16(32,2,true); dv.setUint16(34,16,true); w(36,'data'); dv.setUint32(40,n*2,true);
+  for(let i=0;i<n;i++) dv.setInt16(44+i*2,Math.max(-1,Math.min(1,data[i]))*32767*.9,true);
+  return URL.createObjectURL(new Blob([buf],{type:'audio/wav'}));
 }
+const SOUND_DEFS={
+  ok:  [[[523,0,.22,'tri',.5],[659,.08,.22,'tri',.5],[784,.16,.25,'tri',.5],[1047,.24,.35,'tri',.5]],.65],
+  ko:  [[[220,0,.25,'saw',.25],[165,.15,.4,'saw',.25]],.6],
+  tick:[[[880,0,.12,'square',.18]],.15],
+  go:  [[[1175,0,.4,'tri',.5],[1568,.08,.5,'tri',.4]],.65],
+  click:[[[600,0,.06,'square',.15]],.08],
+  key: [[[750,0,.04,'square',.12]],.06],
+  win: [[[523,0,.3,'tri',.45],[659,.12,.3,'tri',.45],[784,.24,.3,'tri',.45],[659,.36,.3,'tri',.45],[784,.48,.3,'tri',.45],[1047,.6,.6,'tri',.5]],1.25],
+};
+const players={};
+for(const k in SOUND_DEFS){ const a=new Audio(makeWav(...SOUND_DEFS[k])); a.preload='auto'; a.setAttribute('playsinline',''); players[k]=a; }
 function unlockAudio(){
   if(unlocked) return; unlocked=true;
   try{ if(navigator.audioSession) navigator.audioSession.type='playback'; }catch(e){}
-  try{ const el=new Audio(SILENT); el.setAttribute('playsinline',''); el.play().catch(()=>{}); }catch(e){}
-  const a=audio();
-  if(a){ try{ const b=a.createBuffer(1,1,22050), s=a.createBufferSource(); s.buffer=b; s.connect(a.destination); s.start(0); }catch(e){} }
+  Object.values(players).forEach(a=>{ a.muted=true; const p=a.play(); if(p) p.then(()=>{ a.pause(); a.currentTime=0; a.muted=false; }).catch(()=>{ a.muted=false; unlocked=false; }); else a.muted=false; });
 }
-['pointerdown','touchend','click','keydown'].forEach(ev=>document.addEventListener(ev,()=>{ unlockAudio(); audio(); },{capture:true,passive:true}));
-function tone(f,d,type='sine',t0=0,vol=.18){ const a=audio(); if(!a||!soundOn) return; const o=a.createOscillator(), g=a.createGain(), t=a.currentTime+t0;
-  o.type=type; o.frequency.setValueAtTime(f,t); g.gain.setValueAtTime(0,t); g.gain.linearRampToValueAtTime(vol,t+.02); g.gain.exponentialRampToValueAtTime(.001,t+d);
-  o.connect(g).connect(a.destination); o.start(t); o.stop(t+d+.05); }
-const sfx = {
-  ok(){ [523,659,784,1047].forEach((f,i)=>tone(f,.25,'triangle',i*.08)); },
-  ko(){ tone(220,.25,'sawtooth',0,.12); tone(165,.35,'sawtooth',.15,.12); },
-  tick(){ tone(880,.12,'square',0,.08); },
-  go(){ tone(1175,.4,'triangle',0,.2); tone(1568,.5,'triangle',.08,.15); },
-  click(){ tone(600,.06,'square',0,.05); },
-  win(){ [523,659,784,659,784,1047].forEach((f,i)=>tone(f,.3,'triangle',i*.12)); },
-};
-$('soundBtn').onclick=()=>{ soundOn=!soundOn; $('soundBtn').textContent=soundOn?'🔊':'🔇'; if(soundOn) sfx.click(); };
+// touchend / click / keydown sont les gestes qui débloquent le son sur iPad (pas pointerdown)
+['touchend','click','keydown'].forEach(ev=>document.addEventListener(ev,unlockAudio,{capture:true,passive:true}));
+function play(k){ if(!soundOn) return; const a=players[k]; if(!a) return; try{ a.currentTime=0; const p=a.play(); if(p) p.catch(()=>{}); }catch(e){} }
+const sfx={ ok:()=>play('ok'), ko:()=>play('ko'), tick:()=>play('tick'), go:()=>play('go'), click:()=>play('click'), key:()=>play('key'), win:()=>play('win') };
+function audio(){}
+$('soundBtn').onclick=()=>{ soundOn=!soundOn; $('soundBtn').textContent=soundOn?'🔊':'🔇'; if(soundOn) play('ok'); };
 
 /* ---------- Utilitaires ---------- */
 function fmt(ms){ const t=Math.floor(ms/1000); return Math.floor(t/60)+':'+String(t%60).padStart(2,'0'); }
@@ -513,7 +528,7 @@ function finish(){
   else c="💪 Merci d’avoir joué ! Chaque question est une occasion d’apprendre. La Bible a plein de trésors à découvrir !";
   $('comment').textContent=c;
   let cur=0; const el=$('scoreNum'), ring=$('ring'); el.textContent='0'; ring.style.setProperty('--p',0);
-  const t=setInterval(()=>{ cur=Math.min(pct,cur+1); el.textContent=cur; ring.style.setProperty('--p',cur); if(cur%10===0&&cur) tone(400+cur*6,.05,'square',0,.04); if(cur>=pct){ clearInterval(t); if(pct>=60){ sfx.win(); burst(); setTimeout(burst,500); setTimeout(burst,1000);} } },18);
+  const t=setInterval(()=>{ cur=Math.min(pct,cur+1); el.textContent=cur; ring.style.setProperty('--p',cur); if(cur%10===0&&cur) sfx.key(); if(cur>=pct){ clearInterval(t); if(pct>=60){ sfx.win(); burst(); setTimeout(burst,500); setTimeout(burst,1000);} } },18);
   saveResult(pct,timeMs);
 }
 async function saveResult(pct,timeMs){
@@ -579,7 +594,7 @@ function kbType(ch){
   else if(ch==='OK ✓'){ kbHide(); if(inp.value.trim()) start(); return; }
   else if(inp.value.length<20){ inp.value+=(kbShift?ch:ch.toLowerCase()); kbShift=false; }
   if(!inp.value) kbShift=true;
-  $('nameErr').textContent=''; tone(700,.04,'square',0,.04); kbSync();
+  $('nameErr').textContent=''; sfx.key(); kbSync();
 }
 (()=>{ const box=$('kbRows');
   KB_ROWS.forEach(r=>{ const row=document.createElement('div'); row.className='kb-row';
