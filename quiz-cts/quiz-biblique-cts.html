@@ -106,10 +106,15 @@ body{
 .saved{font-size:.95rem;font-weight:700;color:var(--ok);min-height:1.3em;margin-bottom:14px}
 .saved.ko{color:var(--ko)}
 canvas#confetti{position:fixed;inset:0;pointer-events:none;z-index:30}
+#fsBtn{position:fixed;top:12px;right:12px;z-index:40;font-family:inherit;font-weight:900;font-size:1rem;cursor:pointer;border:2px solid rgba(255,255,255,.6);border-radius:999px;padding:10px 16px;background:rgba(0,0,0,.25);color:#fff;backdrop-filter:blur(4px)}
+#fsBtn:hover{background:rgba(0,0,0,.4)}
+#fsTip{position:fixed;top:60px;right:12px;z-index:40;max-width:300px;background:#fff;color:var(--ink);border-radius:14px;padding:12px 14px;font-size:.9rem;font-weight:700;box-shadow:0 10px 30px rgba(0,0,0,.3);display:none}
 </style>
 </head>
 <body>
 <canvas id="confetti"></canvas>
+<button id="fsBtn" type="button">⛶ Plein écran</button>
+<div id="fsTip"></div>
 
 <!-- MENU -->
 <section id="menu" class="screen active">
@@ -348,6 +353,25 @@ async function saveResult(pct, timeMs){
     el.className='saved ko'; el.textContent='⚠️ Impossible d’enregistrer le score sur cet appareil.';
   }
 }
+
+/* Plein écran (iPad : Safari utilise webkitRequestFullscreen) */
+const root = document.documentElement;
+const fsEl = () => document.fullscreenElement || document.webkitFullscreenElement;
+function updateFsBtn(){ $('fsBtn').textContent = fsEl() ? '✕ Quitter le plein écran' : '⛶ Plein écran'; }
+function fsTip(msg){ const t=$('fsTip'); t.textContent=msg; t.style.display='block'; setTimeout(()=>t.style.display='none',6000); }
+$('fsBtn').onclick = async () => {
+  try{
+    if(fsEl()){ await (document.exitFullscreen ? document.exitFullscreen() : document.webkitExitFullscreen()); return; }
+    const req = root.requestFullscreen || root.webkitRequestFullscreen;
+    if(!req) throw new Error('unsupported');
+    await req.call(root);
+  }catch(e){
+    fsTip('Le plein écran est bloqué ici. Utilise le bouton d’agrandissement de la page Claude (en haut à droite), ou ouvre le lien dans Safari.');
+  }
+  setTimeout(()=>{ if(!fsEl()) fsTip('Le plein écran est bloqué ici. Utilise le bouton d’agrandissement de la page Claude (en haut à droite), ou ouvre le lien dans Safari.'); },400);
+};
+document.addEventListener('fullscreenchange', updateFsBtn);
+document.addEventListener('webkitfullscreenchange', updateFsBtn);
 
 $('startBtn').onclick = start;
 $('nameInput').addEventListener('keydown', e=>{ if(e.key==='Enter') start(); });
