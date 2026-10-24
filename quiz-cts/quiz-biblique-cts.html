@@ -191,6 +191,25 @@ body.shake .screen.active{animation:shake .45s}
   #result .board{margin:0}
 }
 
+/* Clavier intégré */
+.name-box input{cursor:pointer;caret-color:transparent}
+.name-box input.typing{border-color:var(--gold);transform:scale(1.03)}
+#kb{position:fixed;left:0;right:0;bottom:0;z-index:48;padding:12px 10px calc(14px + env(safe-area-inset-bottom));
+  background:rgba(40,6,10,.82);backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);border-top:1.5px solid var(--glass-b);
+  transform:translateY(110%);transition:transform .35s cubic-bezier(.2,1.2,.4,1);user-select:none;-webkit-user-select:none}
+#kb.show{transform:none}
+.kb-preview{max-width:900px;margin:0 auto 10px;text-align:center;font-family:'Fredoka',sans-serif;font-size:1.6rem;font-weight:600;min-height:2.1rem}
+.kb-preview .caret{display:inline-block;width:3px;height:1.6rem;background:var(--gold);vertical-align:-4px;margin-left:2px;animation:blink 1s infinite}
+.kb-row{display:flex;justify-content:center;gap:6px;margin:0 auto 7px;max-width:900px}
+.key{flex:1 1 0;max-width:76px;height:clamp(46px,7vh,60px);border:none;border-radius:12px;cursor:pointer;
+  font-family:'Fredoka',sans-serif;font-weight:600;font-size:clamp(1.1rem,2.6vw,1.5rem);color:#fff;background:rgba(255,255,255,.18);
+  box-shadow:0 4px 0 rgba(0,0,0,.3);transition:transform .06s}
+.key:active{transform:translateY(3px) scale(.95);box-shadow:0 1px 0 rgba(0,0,0,.3);background:rgba(255,255,255,.35)}
+.key.wide{max-width:150px;flex-grow:2;font-size:1rem}
+.key.space{max-width:380px;flex-grow:6}
+.key.ok{background:linear-gradient(90deg,var(--pink),var(--orange));max-width:170px;flex-grow:2.4}
+.key.del{background:rgba(255,255,255,.1)}
+.key.on{background:var(--gold);color:var(--cts-deep)}
 canvas#confetti{position:fixed;inset:0;pointer-events:none;z-index:45}
 @media (prefers-reduced-motion:reduce){*{animation-duration:.01ms!important;animation-iteration-count:1!important}}
 </style>
@@ -213,7 +232,7 @@ canvas#confetti{position:fixed;inset:0;pointer-events:none;z-index:45}
     <p class="sub">7 questions · ⚡ chrono · 🏆 classement</p>
     <div class="prize">🎁 Un livre du CTS à gagner !</div>
     <div class="name-box" id="nameBox">
-      <input id="nameInput" maxlength="20" placeholder="Ton pseudo ✍️" autocomplete="off" enterkeyhint="go">
+      <input id="nameInput" maxlength="20" placeholder="Ton pseudo ✍️" autocomplete="off" readonly inputmode="none">
       <div class="err" id="nameErr"></div>
     </div>
     <button class="btn-main" id="startBtn">🚀 Lancer le jeu pour gagner un livre du CTS</button>
@@ -260,6 +279,12 @@ canvas#confetti{position:fixed;inset:0;pointer-events:none;z-index:45}
     </div>
   </div>
 </section>
+
+<!-- Clavier intégré (le clavier de l'iPad ferait quitter le plein écran) -->
+<div id="kb" aria-label="Clavier">
+  <div class="kb-preview"><span id="kbText"></span><span class="caret"></span></div>
+  <div id="kbRows"></div>
+</div>
 
 <div id="countdown"><div id="cdNum">3</div></div>
 
@@ -315,8 +340,22 @@ let db=null, rows=[];
     s.style.fontSize=(1.4+Math.random()*1.6)+'rem'; box.appendChild(s); } })();
 
 /* ---------- Sons ---------- */
-let actx=null, soundOn=true;
-function audio(){ if(!actx){ try{ actx=new (window.AudioContext||window.webkitAudioContext)(); }catch(e){} } if(actx&&actx.state==='suspended') actx.resume(); return actx; }
+let actx=null, soundOn=true, unlocked=false;
+// iPad : le son doit être débloqué par un toucher, et on passe en mode "lecture" pour ignorer le bouton silencieux
+const SILENT="data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQAAAAA=";
+function audio(){
+  if(!actx){ try{ actx=new (window.AudioContext||window.webkitAudioContext)(); }catch(e){} }
+  if(actx&&actx.state!=='running') actx.resume().catch(()=>{});
+  return actx;
+}
+function unlockAudio(){
+  if(unlocked) return; unlocked=true;
+  try{ if(navigator.audioSession) navigator.audioSession.type='playback'; }catch(e){}
+  try{ const el=new Audio(SILENT); el.setAttribute('playsinline',''); el.play().catch(()=>{}); }catch(e){}
+  const a=audio();
+  if(a){ try{ const b=a.createBuffer(1,1,22050), s=a.createBufferSource(); s.buffer=b; s.connect(a.destination); s.start(0); }catch(e){} }
+}
+['pointerdown','touchend','click','keydown'].forEach(ev=>document.addEventListener(ev,()=>{ unlockAudio(); audio(); },{capture:true,passive:true}));
 function tone(f,d,type='sine',t0=0,vol=.18){ const a=audio(); if(!a||!soundOn) return; const o=a.createOscillator(), g=a.createGain(), t=a.currentTime+t0;
   o.type=type; o.frequency.setValueAtTime(f,t); g.gain.setValueAtTime(0,t); g.gain.linearRampToValueAtTime(vol,t+.02); g.gain.exponentialRampToValueAtTime(.001,t+d);
   o.connect(g).connect(a.destination); o.start(t); o.stop(t+d+.05); }
@@ -338,10 +377,19 @@ function shakeScreen(){ document.body.classList.remove('shake'); void document.b
 function flash(kind){ const f=$('flash'); f.className=''; void f.offsetWidth; f.className=kind; }
 
 /* ---------- Classement ---------- */
+// Copie locale des scores sur cet appareil : le classement s'affiche même si la base en ligne n'est pas joignable
+const LS_KEY='cts-quiz-scores';
+function localRows(){ try{ return JSON.parse(localStorage.getItem(LS_KEY)||'[]'); }catch(e){ return []; } }
+function saveLocal(r){ try{ const l=localRows().filter(x=>x.id!==r.id); l.push(r); localStorage.setItem(LS_KEY,JSON.stringify(l.slice(-300))); }catch(e){} }
+let onlineRows=[];
+function mergeRows(){
+  const map=new Map(); localRows().forEach(r=>map.set(r.id,r)); onlineRows.forEach(r=>map.set(r.id,r));
+  rows=[...map.values()].filter(r=>typeof r.name==='string'&&typeof r.timeMs==='number').sort((a,b)=>a.timeMs-b.timeMs).slice(0,200);
+}
 function renderBoard(){
+  mergeRows();
   document.querySelectorAll('.boardList').forEach(ol=>{
     ol.innerHTML='';
-    if(!db){ ol.innerHTML='<li class="empty">Classement indisponible ici.</li>'; return; }
     if(!rows.length){ ol.innerHTML='<li class="empty">Aucun joueur pour l’instant. Sois le premier ! 🚀</li>'; return; }
     rows.forEach((r,i)=>{
       const li=document.createElement('li');
@@ -357,12 +405,14 @@ function renderBoard(){
   });
 }
 async function initDb(){
-  try{ db = await window.claude?.use?.('db'); }catch(e){ db=null; }
+  try{ db = window.claude && window.claude.use ? await window.claude.use('db') : null; }catch(e){ db=null; }
   if(!db){ renderBoard(); return; }
   db.collection('scores').orderBy('timeMs','asc').limit(200).onSnapshot(snap=>{
-    rows = snap.docs.map(d=>({id:d.id, ...d.data()})).filter(r=>typeof r.name==='string' && typeof r.timeMs==='number');
+    onlineRows = snap.docs.map(d=>({id:d.id, ...d.data()}));
     renderBoard();
   }, ()=>{ db=null; renderBoard(); });
+  // Envoie en ligne les scores restés seulement sur cet appareil
+  setTimeout(async()=>{ if(!db) return; for(const r of localRows()){ if(r.pending){ try{ await db.collection('scores').doc(r.id).set({name:r.name,score:r.score,timeMs:r.timeMs,at:r.at}); saveLocal({...r,pending:false}); }catch(e){ break; } } } },2000);
   renderBoard();
 }
 renderBoard(); initDb();
@@ -371,8 +421,8 @@ renderBoard(); initDb();
 function start(){
   audio();
   const n=$('nameInput').value.trim();
-  if(!n){ $('nameErr').textContent='👉 Écris ton pseudo pour jouer !'; const b=$('nameBox'); b.classList.remove('shake'); void b.offsetWidth; b.classList.add('shake'); sfx.ko(); $('nameInput').focus(); return; }
-  $('nameErr').textContent=''; $('nameInput').blur();
+  if(!n){ $('nameErr').textContent='👉 Écris ton pseudo pour jouer !'; const b=$('nameBox'); b.classList.remove('shake'); void b.offsetWidth; b.classList.add('shake'); sfx.ko(); kbShow(); return; }
+  $('nameErr').textContent=''; kbHide();
   playerName=n; idx=0; score=0; streak=0; results=[]; lastId=null;
   countdown(()=>{
     startTime=Date.now(); $('chrono').textContent='⏱ 0:00';
@@ -468,18 +518,16 @@ function finish(){
 }
 async function saveResult(pct,timeMs){
   const el=$('saved'); el.className='saved';
-  if(!db){ el.className='saved ko'; el.textContent='⚠️ Score non enregistré (classement indisponible).'; return; }
-  el.textContent='Enregistrement…';
+  const rec={id:'p'+Date.now().toString(36)+Math.random().toString(36).slice(2,7), name:playerName, score:pct, timeMs, at:Date.now(), pending:true};
+  lastId=rec.id; saveLocal(rec); renderBoard();
+  const rankMsg=()=>{ const rank=rows.findIndex(r=>r.id===lastId)+1; return rank>0?` Tu es ${rank===1?'1er 🥇':rank+'e'} au classement.`:''; };
+  el.textContent='✅ Score enregistré !'+rankMsg();
+  if(!db) return;
   try{
-    const ref=db.collection('scores').doc();
-    lastId=ref.id; renderBoard();
-    await ref.set({name:playerName, score:pct, timeMs, at:Date.now()});
-    const rank=rows.findIndex(r=>r.id===lastId)+1;
-    el.textContent = rank>0 ? `✅ Score enregistré ! Tu es ${rank===1?'1er 🥇':rank+'e'} au classement.` : '✅ Score enregistré !';
-  }catch(e){
-    lastId=null; renderBoard();
-    el.className='saved ko'; el.textContent='⚠️ Impossible d’enregistrer le score sur cet appareil.';
-  }
+    await db.collection('scores').doc(rec.id).set({name:rec.name, score:rec.score, timeMs:rec.timeMs, at:rec.at});
+    saveLocal({...rec,pending:false}); renderBoard();
+    el.textContent='✅ Score enregistré !'+rankMsg();
+  }catch(e){ /* reste sur l'appareil, renvoyé en ligne plus tard */ }
 }
 
 /* ---------- Confettis ---------- */
@@ -519,9 +567,46 @@ $('fsBtn').onclick=async()=>{
 document.addEventListener('fullscreenchange',updateFsBtn);
 document.addEventListener('webkitfullscreenchange',updateFsBtn);
 
-$('startBtn').onclick=start;
-$('nameInput').addEventListener('keydown',e=>{ if(e.key==='Enter') start(); });
-$('restartBtn').onclick=()=>{ sfx.click(); $('nameInput').value=''; lastId=null; renderBoard(); show('menu'); };
+/* ---------- Clavier intégré ---------- */
+const KB_ROWS=[['1','2','3','4','5','6','7','8','9','0'],['A','Z','E','R','T','Y','U','I','O','P'],['Q','S','D','F','G','H','J','K','L','M'],['⇧','W','X','C','V','B','N','É','È','⌫'],['-','_','espace','OK ✓']];
+let kbShift=true;
+const inp=$('nameInput');
+function kbSync(){ $('kbText').textContent=inp.value; document.querySelectorAll('#kb .key[data-ch]').forEach(k=>{ const c=k.dataset.ch; k.textContent=kbShift?c:c.toLowerCase(); }); document.querySelector('#kb .shift')?.classList.toggle('on',kbShift); }
+function kbType(ch){
+  if(ch==='⌫'){ inp.value=inp.value.slice(0,-1); }
+  else if(ch==='⇧'){ kbShift=!kbShift; }
+  else if(ch==='espace'){ if(inp.value && !inp.value.endsWith(' ') && inp.value.length<20) inp.value+=' '; }
+  else if(ch==='OK ✓'){ kbHide(); if(inp.value.trim()) start(); return; }
+  else if(inp.value.length<20){ inp.value+=(kbShift?ch:ch.toLowerCase()); kbShift=false; }
+  if(!inp.value) kbShift=true;
+  $('nameErr').textContent=''; tone(700,.04,'square',0,.04); kbSync();
+}
+(()=>{ const box=$('kbRows');
+  KB_ROWS.forEach(r=>{ const row=document.createElement('div'); row.className='kb-row';
+    r.forEach(ch=>{ const k=document.createElement('button'); k.type='button'; k.className='key';
+      if(ch==='⇧'){ k.classList.add('wide','shift'); k.textContent='⇧'; }
+      else if(ch==='⌫'){ k.classList.add('wide','del'); k.textContent='⌫'; }
+      else if(ch==='espace'){ k.classList.add('space'); k.textContent='espace'; }
+      else if(ch==='OK ✓'){ k.classList.add('ok'); k.textContent='Jouer 🚀'; }
+      else if(/[A-ZÉÈ]/.test(ch)) k.dataset.ch=ch; else k.textContent=ch;
+      k.addEventListener('pointerdown',e=>{ e.preventDefault(); kbType(ch); });
+      row.appendChild(k); });
+    box.appendChild(row); });
+  kbSync(); })();
+function kbShow(){ kbShift=!inp.value; kbSync(); $('kb').classList.add('show'); inp.classList.add('typing'); }
+function kbHide(){ $('kb').classList.remove('show'); inp.classList.remove('typing'); }
+inp.addEventListener('pointerdown',e=>{ e.preventDefault(); kbShow(); });
+document.addEventListener('pointerdown',e=>{ if($('kb').classList.contains('show') && !e.target.closest('#kb') && e.target!==inp && !e.target.closest('#startBtn')) kbHide(); });
+// Clavier physique (PC) : on tape directement
+document.addEventListener('keydown',e=>{
+  if(!$('menu').classList.contains('active')) return;
+  if(e.key==='Enter'){ e.preventDefault(); kbHide(); start(); return; }
+  if(e.key==='Backspace'){ e.preventDefault(); inp.value=inp.value.slice(0,-1); kbSync(); return; }
+  if(e.key.length===1 && !e.ctrlKey && !e.metaKey && inp.value.length<20){ e.preventDefault(); inp.value+=e.key; $('nameErr').textContent=''; kbSync(); }
+});
+
+$('startBtn').onclick=()=>{ kbHide(); start(); };
+$('restartBtn').onclick=()=>{ sfx.click(); inp.value=''; kbSync(); lastId=null; renderBoard(); show('menu'); };
 </script>
 </body>
 </html>
