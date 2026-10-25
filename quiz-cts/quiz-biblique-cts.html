@@ -191,6 +191,10 @@ body.shake .screen.active{animation:shake .45s}
   #result .board{margin:0}
 }
 
+#musicHint{position:fixed;left:50%;bottom:18px;z-index:44;transform:translate(-50%,140%);padding:10px 18px;border-radius:999px;font-weight:900;
+  background:rgba(0,0,0,.35);border:1.5px solid var(--glass-b);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);transition:transform .4s;pointer-events:none;white-space:nowrap}
+#musicHint.show{transform:translate(-50%,0);animation:hintBob 1.6s ease-in-out infinite}
+@keyframes hintBob{50%{translate:0 -6px}}
 /* Clavier intégré */
 .name-box input{cursor:pointer;caret-color:transparent}
 .name-box input.typing{border-color:var(--gold);transform:scale(1.03)}
@@ -223,6 +227,7 @@ canvas#confetti{position:fixed;inset:0;pointer-events:none;z-index:45}
   <button class="icon-btn" id="fsBtn" type="button">⛶ Plein écran</button>
 </div>
 <div id="fsTip"></div>
+<div id="musicHint">🎵 Touche l’écran pour lancer la musique</div>
 
 <!-- MENU -->
 <section id="menu" class="screen active">
@@ -382,7 +387,46 @@ function unlockAudio(){
 function play(k){ if(!soundOn) return; const a=players[k]; if(!a) return; try{ a.currentTime=0; const p=a.play(); if(p) p.catch(()=>{}); }catch(e){} }
 const sfx={ ok:()=>play('ok'), ko:()=>play('ko'), tick:()=>play('tick'), go:()=>play('go'), click:()=>play('click'), key:()=>play('key'), win:()=>play('win') };
 function audio(){}
-$('soundBtn').onclick=()=>{ soundOn=!soundOn; $('soundBtn').textContent=soundOn?'🔊':'🔇'; if(soundOn) play('ok'); };
+/* ---------- Musique d'ambiance du menu ----------
+   Boucle de 16 s générée ici (Do – Sol – Lam – Fa, 120 BPM) : nappe, arpège, basse, petite batterie.
+   Sur iPad elle ne peut démarrer qu'après un toucher : un badge invite à toucher l'écran. */
+function makeMusic(){
+  const sr=22050, bpm=120, beat=60/bpm, bars=8, n=Math.floor(sr*beat*4*bars), L=new Float32Array(n);
+  const hz=m=>440*Math.pow(2,(m-69)/12);
+  const chords=[[60,64,67],[55,59,62],[57,60,64],[53,57,60]]; // C G Am F
+  const add=(t0,d,fn)=>{ const s0=Math.floor(t0*sr), len=Math.floor(d*sr); for(let i=0;i<len;i++){ const k=(s0+i)%n; L[k]+=fn(i/sr,i/len); } };
+  let seed=7; const rnd=()=>{ seed=(seed*16807)%2147483647; return seed/2147483647*2-1; };
+  for(let bar=0;bar<bars;bar++){
+    const ch=chords[Math.floor(bar/2)%4], t=bar*4*beat;
+    if(bar%2===0) ch.forEach(m=>{ const f=hz(m); add(t,8*beat,(x,p)=>Math.sin(2*Math.PI*f*x)*.05*Math.min(1,x/.6)*Math.min(1,(1-p)*6)); });
+    const arp=[ch[0]+12,ch[1]+12,ch[2]+12,ch[1]+12,ch[0]+24,ch[2]+12,ch[1]+12,ch[2]+12];
+    arp.forEach((m,i)=>{ const f=hz(m); add(t+i*beat/2,beat*.9,(x,p)=>{ const ph=(f*x)%1; return (1-4*Math.abs(ph-.5))*.07*Math.pow(1-p,3); }); });
+    [0,2].forEach(b=>{ const f=hz(ch[0]-24); add(t+b*beat,beat*1.8,(x,p)=>Math.sin(2*Math.PI*f*x)*.16*Math.pow(1-p,1.5)); });
+    for(let b=0;b<4;b++){
+      add(t+b*beat,.18,(x,p)=>Math.sin(2*Math.PI*(50+90*Math.pow(1-p,4))*x)*.22*Math.pow(1-p,2));
+      add(t+b*beat+beat/2,.05,(x,p)=>rnd()*.035*(1-p));
+      if(b%2===1) add(t+b*beat,.14,(x,p)=>rnd()*.06*Math.pow(1-p,2));
+    }
+  }
+  let peak=0; for(let i=0;i<n;i++) peak=Math.max(peak,Math.abs(L[i]));
+  const g=.55/(peak||1), buf=new ArrayBuffer(44+n*2), dv=new DataView(buf);
+  const w=(o,s)=>{ for(let i=0;i<s.length;i++) dv.setUint8(o+i,s.charCodeAt(i)); };
+  w(0,'RIFF'); dv.setUint32(4,36+n*2,true); w(8,'WAVE'); w(12,'fmt '); dv.setUint32(16,16,true); dv.setUint16(20,1,true); dv.setUint16(22,1,true);
+  dv.setUint32(24,sr,true); dv.setUint32(28,sr*2,true); dv.setUint16(32,2,true); dv.setUint16(34,16,true); w(36,'data'); dv.setUint32(40,n*2,true);
+  for(let i=0;i<n;i++) dv.setInt16(44+i*2,Math.max(-1,Math.min(1,L[i]*g))*32767,true);
+  return URL.createObjectURL(new Blob([buf],{type:'audio/wav'}));
+}
+const music=new Audio(); music.loop=true; music.preload='auto'; music.setAttribute('playsinline','');
+setTimeout(()=>{ music.src=makeMusic(); },50);
+const inMenu=()=>$('menu').classList.contains('active') && !$('countdown').classList.contains('show');
+function musicHint(){ $('musicHint').classList.toggle('show', soundOn && inMenu() && music.paused); }
+function startMusic(){ if(!soundOn||!inMenu()||!music.src) { musicHint(); return; } const p=music.play(); if(p) p.then(musicHint).catch(musicHint); }
+function stopMusic(){ music.pause(); musicHint(); }
+music.addEventListener('playing',musicHint); music.addEventListener('pause',musicHint);
+['touchend','click','keydown'].forEach(ev=>document.addEventListener(ev,()=>{ if(inMenu() && music.paused) startMusic(); },{passive:true}));
+$('soundBtn').onclick=()=>{ soundOn=!soundOn; $('soundBtn').textContent=soundOn?'🔊':'🔇'; if(soundOn){ play('ok'); startMusic(); } else stopMusic(); };
+setTimeout(musicHint,300);
+
 
 /* ---------- Utilitaires ---------- */
 function fmt(ms){ const t=Math.floor(ms/1000); return Math.floor(t/60)+':'+String(t%60).padStart(2,'0'); }
@@ -437,7 +481,7 @@ function start(){
   audio();
   const n=$('nameInput').value.trim();
   if(!n){ $('nameErr').textContent='👉 Écris ton pseudo pour jouer !'; const b=$('nameBox'); b.classList.remove('shake'); void b.offsetWidth; b.classList.add('shake'); sfx.ko(); kbShow(); return; }
-  $('nameErr').textContent=''; kbHide();
+  $('nameErr').textContent=''; kbHide(); stopMusic();
   playerName=n; idx=0; score=0; streak=0; results=[]; lastId=null;
   countdown(()=>{
     startTime=Date.now(); $('chrono').textContent='⏱ 0:00';
@@ -621,7 +665,7 @@ document.addEventListener('keydown',e=>{
 });
 
 $('startBtn').onclick=()=>{ kbHide(); start(); };
-$('restartBtn').onclick=()=>{ sfx.click(); inp.value=''; kbSync(); lastId=null; renderBoard(); show('menu'); };
+$('restartBtn').onclick=()=>{ sfx.click(); inp.value=''; kbSync(); lastId=null; renderBoard(); show('menu'); startMusic(); };
 </script>
 </body>
 </html>
